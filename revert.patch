@@ -1,0 +1,19 @@
+--- components/ModelViewer.tsx
++++ components/ModelViewer.tsx
+@@ -290,15 +290,6 @@
+                     newMat.emissiveIntensity = 0;
+                 }
+ 
+-                // 針對類別 B 部位 (不需花紋貼圖的部位)：卸除底色貼圖，保留 Normal Map
+-                const upperName = getNormalizedPartName(mesh.name).toUpperCase();
+-                if (['TONGUE', 'MIDSOLE', 'OUTSOLE'].includes(upperName)) {
+-                    if (newMat.map) {
+-                        newMat.map = null;
+-                        newMat.needsUpdate = true;
+-                    }
+-                    newMat.color.setHex(0xffffff); // 預設白底，確保染色無色差
+-                    mesh.userData.originalMaterial = newMat; // 更新原始材質參照，確保重置時依然無花紋
+-                }
+-
+                 mesh.material = newMat;
+                 mesh.userData.isCustomMaterial = true;

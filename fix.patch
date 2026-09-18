@@ -1,0 +1,26 @@
+--- components/ModelViewer.tsx
++++ components/ModelViewer.tsx
+@@ -312,8 +312,23 @@
+       }
+     };
+     window.addEventListener('preview-part-color', handlePreviewColor);
+-    return () => window.removeEventListener('preview-part-color', handlePreviewColor        if (config.url && isUrlSafe(config.url)) {
++    return () => window.removeEventListener('preview-part-color', handlePreviewColor);
++  }, [cachedMeshes]);
++
++  useEffect(() => {
++    cachedMeshes.forEach(mesh => {
++      const config = textureMap[mesh.uuid];
++      if (config) {
++        const material = mesh.material as THREE.MeshStandardMaterial;
++        if (config.color) material.color.set(config.color);
++        else material.color.setHex(0xffffff);
++        material.roughness = config.roughness;
++        material.metalness = config.metalness;
++        material.opacity = config.opacity;
++        material.alphaTest = 0.05;
++
++        if (config.url && isUrlSafe(config.url)) {
+             if (mesh.userData.currentTextureUrl !== config.url) {
+                 mesh.userData.currentTextureUrl = config.url; // 立即更新 URL，防止重複觸發載入
+                 textureLoader.load(config.url, (texture) => {

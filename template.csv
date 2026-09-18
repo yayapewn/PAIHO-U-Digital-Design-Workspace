@@ -1,0 +1,5 @@
+鞋型 (Model),部位 (Part),顯示名稱 (Name),圖片編號 (Image ID),標題 (Title),說明 (Description),連結 (Link)
+Traveler,Vamp,Vamp 01,01,4-WAY STRETCH FABRIC,Dynamic stretchable fabric for peak performance flexibility.,https://example.com/link1
+Traveler,Vamp,Vamp 02,02,ENGINEERED JACQUARD,Woven patterns for strategic support and breathability.,https://example.com/link2
+Traveler,Tongue,Tongue 01,01,SOFT MESH,Breathable soft mesh for instep comfort.,https://example.com/link3
+Lace,Quarter Overlay,Overlay 01,01,DURABLE LEATHER,Premium synthetic leather for lateral support.,https://example.com/link4

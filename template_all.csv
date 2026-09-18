@@ -1,0 +1,18 @@
+鞋型 (Model),部位 (Part),圖片編號 (ID),介面顯示名稱 (Name),標題 (Title),說明內文 (Description),連結 (Link)
+Traveler,VAMP,01,Vamp 01,4-WAY STRETCH FABRIC,Dynamic stretchable fabric for peak performance flexibility.,https://example.com
+Traveler,TONGUE,01,Tongue 01,SOFT MESH,Breathable soft mesh for instep comfort.,https://example.com
+Traveler,HEEL COLLAR,01,Collar 01,PADDED COLLAR,Comfort padding around the ankle.,https://example.com
+Traveler,TOE CAP,01,Toe Cap 01,DURABLE GUARD,Abrasion resistant toe protection.,https://example.com
+Traveler,LINING,01,Lining 01,MOISTURE WICKING,Keeps feet dry.,https://example.com
+Traveler,QUARTER,01,Quarter 01,SUPPORTIVE MESH,Lateral stability mesh.,https://example.com
+Traveler,INSOLE,01,Insole 01,ORTHOLITE,Premium cushioning.,https://example.com
+Traveler,PULL LOOP,01,Pull Loop 01,WOVEN STRAP,Easy on/off strap.,https://example.com
+Lace,VAMP,01,Vamp 01,SUEDE LEATHER,Premium split leather.,https://example.com
+Lace,TONGUE,01,Tongue 01,LEATHER TONGUE,Durable leather tongue.,https://example.com
+Lace,HEEL COLLAR,01,Collar 01,SMOOTH LEATHER,Soft leather lining.,https://example.com
+Lace,TOE CAP,01,Toe Cap 01,REINFORCED LEATHER,Double stitched toe.,https://example.com
+Lace,LINING,01,Lining 01,MICROFIBER,Premium soft touch microfiber.,https://example.com
+Lace,QUARTER,01,Quarter 01,PERFORATED LEATHER,Breathable leather quarter.,https://example.com
+Lace,INSOLE,01,Insole 01,CORK BED,Natural cork footbed.,https://example.com
+Lace,EYESTAY,01,Eyestay 01,REINFORCED,Durable lace support.,https://example.com
+Lace,LACES,01,Laces 01,COTTON WAXED,Premium waxed laces.,https://example.com
