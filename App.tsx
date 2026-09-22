@@ -6,6 +6,7 @@ import { ShareModal } from './components/ShareModal';
 import { TextureItem, SelectedPart, TextureConfig } from './types';
 import { MODELS, GENERAL_TEXTURES, TRAVELER_VAMP_TEXTURES } from './data';
 import { useAppStore } from './store';
+import { textureCacheManager } from './services/textureCacheManager';
 
 const ENABLE_DEV_TOOLS = true;
 
@@ -38,18 +39,46 @@ const App: React.FC = () => {
   const modelViewerRef = useRef<any>(null);
   const currentModel = MODELS[activeModelIndex];
 
-  useEffect(() => {
-    if (!selectedPart) {
-      setLibraries({ materials: GENERAL_TEXTURES });
-      return;
-    }
+  // 即時且同步推導當前部位可用的材質列表，避免等待 useEffect 造成的單幀閃爍或延遲
+  const currentMaterials = useMemo(() => {
+    if (!selectedPart) return GENERAL_TEXTURES;
     const partName = selectedPart.name.toUpperCase();
     if (currentModel.id === 'traveler' && partName === 'VAMP') {
-      setLibraries({ materials: TRAVELER_VAMP_TEXTURES });
-    } else {
-      setLibraries({ materials: GENERAL_TEXTURES });
+      return TRAVELER_VAMP_TEXTURES;
     }
-  }, [currentModel.id, selectedPart, setLibraries]);
+    return GENERAL_TEXTURES;
+  }, [currentModel.id, selectedPart]);
+
+  useEffect(() => {
+    setLibraries({ materials: currentMaterials });
+  }, [currentMaterials, setLibraries]);
+
+  const isLibrarySupported = (partName: string) => {
+    if (!partName) return false;
+    const name = partName.toUpperCase();
+    let disabledParts: string[] = [];
+    if (currentModel.id === 'traveler') {
+      disabledParts = ['OBJECT011', 'MIDSOLE', 'LINE048', 'OBJECT019', 'TONGUE LABEL', 'QUARTER LABEL', 'TONGUE REINFORCEMENT', 'HEEL COLLAR REINFORCEMENT', 'EYELET', 'HEEL STRAP', 'QUARTER OVERLAY', 'OUTSOLE'];
+    } else if (currentModel.id === 'lace') {
+      disabledParts = ['TONGUE', 'OBJECT011', 'MIDSOLE', 'LINE048', 'OBJECT019', 'TONGUE LABEL', 'QUARTER LABEL', 'TONGUE REINFORCEMENT', 'HEEL COLLAR REINFORCEMENT', 'EYELET', 'HEEL STRAP', 'QUARTER OVERLAY', 'OUTSOLE'];
+    } else {
+      disabledParts = ['OBJECT011', 'MIDSOLE', 'LINE048', 'OBJECT019', 'TONGUE LABEL', 'QUARTER LABEL', 'TONGUE REINFORCEMENT', 'HEEL COLLAR REINFORCEMENT', 'EYELET', 'HEEL STRAP', 'QUARTER OVERLAY', 'OUTSOLE'];
+    }
+    return !disabledParts.includes(name);
+  };
+
+  // 當使用者選取部位時，背景非同步預載該部位的材質（On-Demand Preload，不影響主執行緒與 UI）
+  useEffect(() => {
+    if (selectedPart && isLibrarySupported(selectedPart.name)) {
+      const activePartKey = `${currentModel.id}_${selectedPart.name}`;
+      const activeConfig = partTextures[activePartKey];
+      textureCacheManager.preloadPartTextures(
+        currentMaterials,
+        selectedPart.name,
+        activeConfig?.url
+      );
+    }
+  }, [selectedPart, currentMaterials, currentModel.id, partTextures]);
 
   useEffect(() => {
     const checkOrientation = () => {
@@ -74,26 +103,14 @@ const App: React.FC = () => {
       setTimeout(() => setToast(null), 3000);
       return;
     }
+    // 切換模型時釋放未引用的貼圖快取，重置任務隊列以維持記憶體健康
+    textureCacheManager.onModelSwitch();
     setIsModelReady(false);
     setActiveModelIndex(index);
     setEnvRotation(MODELS[index].initialEnvRotation);
     setSelectedPart(null);
     setActiveTexture(null);
     setPartTextures(() => ({}));
-  };
-
-  const isLibrarySupported = (partName: string) => {
-    if (!partName) return false;
-    const name = partName.toUpperCase();
-    let disabledParts: string[] = [];
-    if (currentModel.id === 'traveler') {
-      disabledParts = ['OBJECT011', 'MIDSOLE', 'LINE048', 'OBJECT019', 'TONGUE LABEL', 'QUARTER LABEL', 'TONGUE REINFORCEMENT', 'HEEL COLLAR REINFORCEMENT', 'EYELET', 'HEEL STRAP', 'QUARTER OVERLAY', 'OUTSOLE'];
-    } else if (currentModel.id === 'lace') {
-      disabledParts = ['TONGUE', 'OBJECT011', 'MIDSOLE', 'LINE048', 'OBJECT019', 'TONGUE LABEL', 'QUARTER LABEL', 'TONGUE REINFORCEMENT', 'HEEL COLLAR REINFORCEMENT', 'EYELET', 'HEEL STRAP', 'QUARTER OVERLAY', 'OUTSOLE'];
-    } else {
-      disabledParts = ['OBJECT011', 'MIDSOLE', 'LINE048', 'OBJECT019', 'TONGUE LABEL', 'QUARTER LABEL', 'TONGUE REINFORCEMENT', 'HEEL COLLAR REINFORCEMENT', 'EYELET', 'HEEL STRAP', 'QUARTER OVERLAY', 'OUTSOLE'];
-    }
-    return !disabledParts.includes(name);
   };
 
   const applyTexture = (texture: TextureItem) => {
@@ -481,7 +498,7 @@ const App: React.FC = () => {
             <div className="flex-1 overflow-y-auto no-scrollbar flex flex-col h-full">
                 <div className="px-6 pb-10 pt-8 md:px-7 md:pt-12 md:pb-10 flex-1 space-y-10 md:space-y-12">
                     {selectedPart ? (
-                        <div key={selectedPart.id} className="space-y-10 md:space-y-12 animate-in fade-in slide-in-from-bottom-8 md:slide-in-from-right-10 duration-700">
+                        <div className="space-y-10 md:space-y-12 animate-in fade-in duration-300">
                             
                             {isLibrarySupported(selectedPart.name) && (
                               <section>
@@ -492,15 +509,17 @@ const App: React.FC = () => {
                                       </div>
                                   </div>
                                   <div id="content-library" className="grid grid-cols-3 md:grid-cols-2 lg:grid-cols-3 gap-[2px] border border-gray-200 bg-white rounded-[2px] overflow-hidden">
-                                      {libraries.materials.map(t => (
+                                      {currentMaterials.map((t, idx) => (
                                           <button key={t.id} onClick={(e) => { e.stopPropagation(); applyTexture(t); }} className="aspect-square overflow-hidden relative group bg-white cursor-pointer transition-all duration-300">
                                               {/* Selection Border / Inset Effect */}
                                               <div className={`absolute inset-0 z-20 pointer-events-none transition-all duration-300 ${currentTextureConfig?.url === t.url ? 'ring-2 ring-inset ring-indigo-600 shadow-[inset_0_0_0_4px_white]' : 'ring-0 ring-transparent'}`}></div>
                                               
                                               {/* Image with Hover Scale & Active Shrink */}
                                               <img 
-                                                src={t.url} 
-                                                className={`w-full h-full object-cover transition-all duration-500 ease-out 
+                                                src={t.thumbnail || t.url} 
+                                                loading={idx < 3 ? "eager" : "lazy"}
+                                                decoding="async"
+                                                className={`w-full h-full object-cover transition-all duration-300 ease-out 
                                                   ${currentTextureConfig?.url === t.url ? 'scale-90 opacity-100' : 'scale-100 group-hover:scale-110 group-hover:brightness-95 opacity-90 group-hover:opacity-100'}
                                                 `} 
                                                 alt={t.name} 

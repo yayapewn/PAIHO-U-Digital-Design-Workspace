@@ -4,6 +4,7 @@ import { OrbitControls, useGLTF, Html, useProgress, Environment, PerspectiveCame
 import * as THREE from 'three';
 import { ArrowUpRight } from 'lucide-react';
 import { SelectedPart, TextureConfig, TextureItem } from '../types';
+import { textureCacheManager } from '../services/textureCacheManager';
 
 // 標準化八大部位名稱
 const MAIN_PARTS = [
@@ -459,13 +460,6 @@ interface ModelProps {
 
 const Model: React.FC<ModelProps & { interactive?: boolean }> = ({ url, modelId, modelScale, modelRotation, selectedPart, onPartSelect, textureMap, controls, isPickingColor, onColorPicked, interactive = true }) => {
   const { scene } = useGLTF(url);
-  // 使用獨立的 LoadingManager，避免觸發全域的 Suspense Loader（防止閃黑畫面）
-  const imageBitmapLoader = useMemo(() => {
-      const manager = new THREE.LoadingManager();
-      const loader = new THREE.ImageBitmapLoader(manager);
-      loader.setOptions({ imageOrientation: 'none' });
-      return loader;
-  }, []);
   
   // 用於判斷是拖曳旋轉還是點擊部位
   const pointerDownPos = useRef({ x: 0, y: 0 });
@@ -647,52 +641,49 @@ const Model: React.FC<ModelProps & { interactive?: boolean }> = ({ url, modelId,
         material.opacity = config.opacity;
         material.alphaTest = 0.05;
         
-        const hasColorMap = config.url && isUrlSafe(config.url);
-        const hasNormalMap = config.normalUrl && isUrlSafe(config.normalUrl);
+        const hasColorMap = Boolean(config.url && isUrlSafe(config.url));
+        const hasNormalMap = Boolean(config.normalUrl && isUrlSafe(config.normalUrl));
 
         if (material.userData.shaderUniforms) {
             material.userData.shaderUniforms.uSmartColorEnabled.value = hasColorMap ? 0.0 : 1.0;
         }
 
-        // Define a unique key for the current texture combination to avoid race conditions
+        // 定義材質組合 Key 以辨識是否有貼圖變更
         const textureComboKey = `${config.url || ''}|${config.normalUrl || ''}`;
 
         if (hasColorMap || hasNormalMap) {
             if (mesh.userData.currentTextureComboKey !== textureComboKey) {
-                mesh.userData.currentTextureComboKey = textureComboKey; // Mark as loading this specific combo
+                mesh.userData.currentTextureComboKey = textureComboKey;
 
-                const promises: Promise<{ type: 'color' | 'normal', texture: THREE.Texture | null }>[] = [];
+                // 產生請求版本號以徹底防止 Race Condition
+                const currentToken = (mesh.userData.selectionToken || 0) + 1;
+                mesh.userData.selectionToken = currentToken;
 
-                if (hasColorMap) {
-                    promises.push(new Promise((resolve) => {
-                        imageBitmapLoader.load(config.url!, (imageBitmap) => {
-                            const texture = new THREE.Texture(imageBitmap);
-                            texture.flipY = false;
-                            texture.colorSpace = THREE.SRGBColorSpace;
-                            texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
-                            resolve({ type: 'color', texture });
-                        }, undefined, () => resolve({ type: 'color', texture: null }));
-                    }));
+                // 若該貼圖在預載佇列中，立即將優先度升至最高
+                if (config.url) textureCacheManager.boostPriority(config.url);
+                if (config.normalUrl) textureCacheManager.boostPriority(config.normalUrl);
+
+                const loadPromises: Promise<{ type: 'color' | 'normal'; texture: THREE.Texture | null }>[] = [];
+
+                if (hasColorMap && config.url) {
+                    loadPromises.push(
+                        textureCacheManager.loadTexture(config.url, false)
+                            .then(texture => ({ type: 'color' as const, texture }))
+                            .catch(() => ({ type: 'color' as const, texture: null }))
+                    );
                 }
 
-                if (hasNormalMap) {
-                    promises.push(new Promise((resolve) => {
-                        imageBitmapLoader.load(config.normalUrl!, (imageBitmap) => {
-                            const texture = new THREE.Texture(imageBitmap);
-                            texture.flipY = false;
-                            texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
-                            resolve({ type: 'normal', texture });
-                        }, undefined, () => resolve({ type: 'normal', texture: null }));
-                    }));
+                if (hasNormalMap && config.normalUrl) {
+                    loadPromises.push(
+                        textureCacheManager.loadTexture(config.normalUrl, true)
+                            .then(texture => ({ type: 'normal' as const, texture }))
+                            .catch(() => ({ type: 'normal' as const, texture: null }))
+                    );
                 }
 
-                Promise.all(promises).then((results) => {
-                    // Check if the user hasn't clicked another texture while we were downloading
-                    if (mesh.userData.currentTextureComboKey !== textureComboKey) {
-                        // Dispose of the downloaded textures since they are no longer needed
-                        results.forEach(res => {
-                            if (res.texture) res.texture.dispose();
-                        });
+                Promise.all(loadPromises).then((results) => {
+                    // 若在非同步載入期間使用者已點選其他材質，直接捨棄此過時回應
+                    if (mesh.userData.selectionToken !== currentToken) {
                         return;
                     }
 
@@ -704,46 +695,54 @@ const Model: React.FC<ModelProps & { interactive?: boolean }> = ({ url, modelId,
                         if (res.type === 'normal') normalTexture = res.texture;
                     });
 
-                    // Apply Color Texture
-                    if (hasColorMap) {
-                        if (colorTexture) {
-                            colorTexture.repeat.set(config.scale, config.scale);
-                            colorTexture.offset.set(config.offsetX, config.offsetY);
-                            colorTexture.rotation = (config.rotation * Math.PI) / 180;
-                            colorTexture.center.set(0.5, 0.5);
-                            colorTexture.needsUpdate = true;
-                            
-                            if (material.map && material.map !== origMat.map) material.map.dispose();
-                            material.map = colorTexture;
-                        }
-                    } else {
-                         // Fallback logic if no color map was requested but a normal map was
-                         // ... (handles restoring original material or clearing based on categoryB)
+                    // 釋放先前以此 Mesh 保留的貼圖引用計數
+                    if (mesh.userData.appliedColorUrl && mesh.userData.appliedColorUrl !== config.url) {
+                        textureCacheManager.releaseTexture(mesh.userData.appliedColorUrl);
+                        mesh.userData.appliedColorUrl = null;
+                    }
+                    if (mesh.userData.appliedNormalUrl && mesh.userData.appliedNormalUrl !== config.normalUrl) {
+                        textureCacheManager.releaseTexture(mesh.userData.appliedNormalUrl);
+                        mesh.userData.appliedNormalUrl = null;
                     }
 
-                    // Apply Normal Texture
-                    if (hasNormalMap) {
-                        if (normalTexture) {
-                            normalTexture.repeat.set(config.scale, config.scale);
-                            normalTexture.offset.set(config.offsetX, config.offsetY);
-                            normalTexture.rotation = (config.rotation * Math.PI) / 180;
-                            normalTexture.center.set(0.5, 0.5);
-                            normalTexture.needsUpdate = true;
+                    // 套用 Color 貼圖
+                    if (hasColorMap && colorTexture) {
+                        colorTexture.repeat.set(config.scale, config.scale);
+                        colorTexture.offset.set(config.offsetX, config.offsetY);
+                        colorTexture.rotation = (config.rotation * Math.PI) / 180;
+                        colorTexture.center.set(0.5, 0.5);
+                        colorTexture.needsUpdate = true;
+                        
+                        material.map = colorTexture;
+                        if (mesh.userData.appliedColorUrl !== config.url) {
+                            textureCacheManager.retainTexture(config.url);
+                            mesh.userData.appliedColorUrl = config.url;
+                        }
+                    } else if (!hasColorMap) {
+                        material.map = origMat.map;
+                    }
 
-                            if (material.normalMap && material.normalMap !== origMat.normalMap) material.normalMap.dispose();
-                            material.normalMap = normalTexture;
+                    // 套用 Normal 貼圖
+                    if (hasNormalMap && normalTexture) {
+                        normalTexture.repeat.set(config.scale, config.scale);
+                        normalTexture.offset.set(config.offsetX, config.offsetY);
+                        normalTexture.rotation = (config.rotation * Math.PI) / 180;
+                        normalTexture.center.set(0.5, 0.5);
+                        normalTexture.needsUpdate = true;
+
+                        material.normalMap = normalTexture;
+                        if (mesh.userData.appliedNormalUrl !== config.normalUrl) {
+                            textureCacheManager.retainTexture(config.normalUrl);
+                            mesh.userData.appliedNormalUrl = config.normalUrl;
                         }
-                    } else {
-                         if (material.normalMap !== origMat.normalMap) {
-                            if (material.normalMap) material.normalMap.dispose();
-                            material.normalMap = origMat.normalMap;
-                        }
+                    } else if (!hasNormalMap) {
+                        material.normalMap = origMat.normalMap;
                     }
 
                     material.needsUpdate = true;
                 });
             } else {
-                // If it's the exact same texture combination, just update the transforms (scale, offset, rotation)
+                // 若為同一套材質，僅即時更新 UV 變形 (Scale, Offset, Rotation)
                 if (material.map && material.map !== origMat.map) {
                     material.map.repeat.set(config.scale, config.scale);
                     material.map.rotation = (config.rotation * Math.PI) / 180;
@@ -756,7 +755,16 @@ const Model: React.FC<ModelProps & { interactive?: boolean }> = ({ url, modelId,
                 }
             }
         } else {
-            mesh.userData.currentTextureComboKey = null; // Reset key
+            // 無貼圖要求：釋放已套用的貼圖引用
+            if (mesh.userData.appliedColorUrl) {
+                textureCacheManager.releaseTexture(mesh.userData.appliedColorUrl);
+                mesh.userData.appliedColorUrl = null;
+            }
+            if (mesh.userData.appliedNormalUrl) {
+                textureCacheManager.releaseTexture(mesh.userData.appliedNormalUrl);
+                mesh.userData.appliedNormalUrl = null;
+            }
+            mesh.userData.currentTextureComboKey = null;
             
             const upperName = getNormalizedPartName(mesh.name).toUpperCase();
             
@@ -784,7 +792,6 @@ const Model: React.FC<ModelProps & { interactive?: boolean }> = ({ url, modelId,
             } else {
                 let changed = false;
                 if (material.map !== origMat.map) {
-                    if (material.map && material.map !== origMat.map) material.map.dispose();
                     material.map = origMat.map;
                     changed = true;
                 }
@@ -806,7 +813,6 @@ const Model: React.FC<ModelProps & { interactive?: boolean }> = ({ url, modelId,
                 }
                 
                 if (material.normalMap !== origMat.normalMap) {
-                    if (material.normalMap && material.normalMap !== origMat.normalMap) material.normalMap.dispose();
                     material.normalMap = origMat.normalMap;
                     changed = true;
                 }
@@ -817,6 +823,17 @@ const Model: React.FC<ModelProps & { interactive?: boolean }> = ({ url, modelId,
             }
         }
       } else {
+        // config 為空：釋放先前可能引用的貼圖
+        if (mesh.userData.appliedColorUrl) {
+            textureCacheManager.releaseTexture(mesh.userData.appliedColorUrl);
+            mesh.userData.appliedColorUrl = null;
+        }
+        if (mesh.userData.appliedNormalUrl) {
+            textureCacheManager.releaseTexture(mesh.userData.appliedNormalUrl);
+            mesh.userData.appliedNormalUrl = null;
+        }
+        mesh.userData.currentTextureComboKey = null;
+
         const origMat = Array.isArray(mesh.userData.originalMaterial) ? mesh.userData.originalMaterial[0] : mesh.userData.originalMaterial;
         if (!origMat) return;
         const material = mesh.material as THREE.MeshStandardMaterial;
@@ -837,13 +854,11 @@ const Model: React.FC<ModelProps & { interactive?: boolean }> = ({ url, modelId,
         }
         
         if (material.map !== origMat.map) {
-            if (material.map && material.map !== origMat.map) material.map.dispose();
             material.map = origMat.map;
             mesh.userData.currentTextureUrl = null;
             changed = true;
         }
         if (material.normalMap !== origMat.normalMap) {
-            if (material.normalMap && material.normalMap !== origMat.normalMap) material.normalMap.dispose();
             material.normalMap = origMat.normalMap;
             mesh.userData.currentNormalUrl = null;
             changed = true;
@@ -884,7 +899,20 @@ const Model: React.FC<ModelProps & { interactive?: boolean }> = ({ url, modelId,
         }
       }
     });
-  }, [cachedMeshes, textureMap]);
+
+    return () => {
+      cachedMeshes.forEach(mesh => {
+        if (mesh.userData.appliedColorUrl) {
+          textureCacheManager.releaseTexture(mesh.userData.appliedColorUrl);
+          mesh.userData.appliedColorUrl = null;
+        }
+        if (mesh.userData.appliedNormalUrl) {
+          textureCacheManager.releaseTexture(mesh.userData.appliedNormalUrl);
+          mesh.userData.appliedNormalUrl = null;
+        }
+      });
+    };
+  }, [cachedMeshes, textureMap, modelId]);
 
   useFrame((state, delta) => {
     cachedMeshes.forEach(mesh => {
@@ -1160,6 +1188,29 @@ const CameraResetter = ({ modelId, controlsRef }: { modelId?: string, controlsRe
     return null;
 };
 
+// 監聽 WebGL Context Lost，及時釋放非釘選貼圖保護 GPU
+const WebGLContextWatcher: React.FC = () => {
+    const { gl } = useThree();
+    useEffect(() => {
+        const handleContextLost = (e: Event) => {
+            e.preventDefault();
+            console.warn('[ModelViewer] WebGL Context Lost detected. Releasing unpinned textures and cooling down GPU.');
+            textureCacheManager.onModelSwitch();
+        };
+        const handleContextRestored = () => {
+            console.info('[ModelViewer] WebGL Context Restored.');
+        };
+        const canvas = gl.domElement;
+        canvas.addEventListener('webglcontextlost', handleContextLost, false);
+        canvas.addEventListener('webglcontextrestored', handleContextRestored, false);
+        return () => {
+            canvas.removeEventListener('webglcontextlost', handleContextLost);
+            canvas.removeEventListener('webglcontextrestored', handleContextRestored);
+        };
+    }, [gl]);
+    return null;
+};
+
 const ModelViewer = React.forwardRef<any, ModelViewerProps>(({ 
     url, wireframeUrl, modelId, modelScale, modelRotation, modelPosition, selectedPart, onPartSelect, textureMap, activeTexture, envPreset, envIntensity, envRotation, dirLightRotation, shadowBlur, shadowNormalBias, autoRotate, isPickingColor, onColorPicked, onModelReady, needsDemoRotation, onUserRotated
 }, ref) => {
@@ -1170,6 +1221,8 @@ const ModelViewer = React.forwardRef<any, ModelViewerProps>(({
 
   if (modelId !== prevModelId) {
       setPrevModelId(modelId);
+      // 模型切換時釋放前一個模型的未引用貼圖與預載隊列
+      textureCacheManager.onModelSwitch();
       if (modelId && animatedModels.has(modelId)) {
           setTransitionState('complete');
       } else if (!wireframeUrl) {
@@ -1207,6 +1260,7 @@ const ModelViewer = React.forwardRef<any, ModelViewerProps>(({
       >
         <AdaptiveDpr pixelated />
         <AdaptiveEvents />
+        <WebGLContextWatcher />
         <PerspectiveCamera makeDefault position={DEFAULT_VIEW.pos} fov={DEFAULT_VIEW.fov} near={0.01} />
         <CameraResetter modelId={modelId} controlsRef={controlsRef} />
         <DemoRotationController 
